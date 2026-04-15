@@ -2,8 +2,10 @@ package task
 
 import (
 	"context"
+	"time"
 
-	taskdomain "example.com/taskservice/internal/domain/task"
+	// Исправленный путь импорта, соответствующий твоему go.mod
+	taskdomain "github.com/medods/test-task-for-junior-backend-developer/internal/domain/task"
 )
 
 type Repository interface {
@@ -22,14 +24,20 @@ type Usecase interface {
 	List(ctx context.Context) ([]taskdomain.Task, error)
 }
 
+// CreateInput включает настройки периодичности для создания задачи
 type CreateInput struct {
 	Title       string
 	Description string
 	Status      taskdomain.Status
+	ScheduledAt *time.Time
+	Recurrence  *taskdomain.RecurrenceRule
 }
 
+// UpdateInput позволяет обновлять поля задачи и менять правила повторения
 type UpdateInput struct {
 	Title       string
 	Description string
 	Status      taskdomain.Status
+	ScheduledAt *time.Time
+	Recurrence  *taskdomain.RecurrenceRule
 }

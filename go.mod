@@ -1,4 +1,4 @@
-module example.com/taskservice
+module github.com/medods/test-task-for-junior-backend-developer
 
 go 1.23.0
 

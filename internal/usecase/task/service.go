@@ -3,10 +3,11 @@ package task
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
-	taskdomain "example.com/taskservice/internal/domain/task"
+	taskdomain "github.com/medods/test-task-for-junior-backend-developer/internal/domain/task"
 )
 
 type Service struct {
@@ -21,105 +22,160 @@ func NewService(repo Repository) *Service {
 	}
 }
 
-func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error) {
-	normalized, err := validateCreateInput(input)
-	if err != nil {
+func (s *Service) CreateTask(ctx context.Context, t taskdomain.Task) (*taskdomain.Task, error) {
+	t.Title = strings.TrimSpace(t.Title)
+	if t.Title == "" {
+		return nil, fmt.Errorf("title is required")
+	}
+
+	if t.Status == "" {
+		t.Status = taskdomain.StatusNew
+	}
+
+	if err := s.validateRecurrence(t.Recurrence); err != nil {
 		return nil, err
 	}
 
-	model := &taskdomain.Task{
-		Title:       normalized.Title,
-		Description: normalized.Description,
-		Status:      normalized.Status,
+	if t.ScheduledAt == nil && t.Recurrence != nil {
+		nextRun := s.calculateNextRun(t.Recurrence, s.now())
+		t.ScheduledAt = &nextRun
 	}
+
 	now := s.now()
-	model.CreatedAt = now
-	model.UpdatedAt = now
+	t.CreatedAt = now
+	t.UpdatedAt = now
 
-	created, err := s.repo.Create(ctx, model)
+	return s.repo.Create(ctx, &t)
+}
+
+func (s *Service) Update(ctx context.Context, id int64, t taskdomain.Task) (*taskdomain.Task, error) {
+	oldTask, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	return created, nil
+	t.ID = id
+	t.UpdatedAt = s.now()
+
+	if t.Status == taskdomain.StatusDone && oldTask.Status != taskdomain.StatusDone {
+		if oldTask.Recurrence != nil {
+			go s.spawnNextOccurrence(context.Background(), *oldTask)
+		}
+	}
+
+	return s.repo.Update(ctx, &t)
 }
 
-func (s *Service) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
-	if id <= 0 {
-		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+func (s *Service) spawnNextOccurrence(ctx context.Context, old taskdomain.Task) {
+	baseTime := s.now()
+	if old.ScheduledAt != nil {
+		baseTime = *old.ScheduledAt
+	}
+	
+	nextDate := s.calculateNextRun(old.Recurrence, baseTime)
+	
+	if old.ScheduledAt != nil && nextDate.Equal(*old.ScheduledAt) {
+		return 
 	}
 
-	return s.repo.GetByID(ctx, id)
+	newTask := taskdomain.Task{
+		Title:       old.Title,
+		Description: old.Description,
+		Status:      taskdomain.StatusNew,
+		ScheduledAt: &nextDate,
+		Recurrence:  old.Recurrence,
+	}
+	
+	_, _ = s.CreateTask(ctx, newTask)
 }
 
-func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error) {
-	if id <= 0 {
-		return nil, fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+func (s *Service) calculateNextRun(rule *taskdomain.RecurrenceRule, from time.Time) time.Time {
+	if rule == nil {
+		return from.AddDate(0, 0, 1)
 	}
 
-	normalized, err := validateUpdateInput(input)
-	if err != nil {
-		return nil, err
-	}
+	switch rule.Type {
+	case "daily":
+		days := 1
+		if rule.EveryNDays != nil && *rule.EveryNDays > 0 {
+			days = *rule.EveryNDays
+		}
+		return from.AddDate(0, 0, days)
 
-	model := &taskdomain.Task{
-		ID:          id,
-		Title:       normalized.Title,
-		Description: normalized.Description,
-		Status:      normalized.Status,
-		UpdatedAt:   s.now(),
-	}
+	case "monthly":
+		if len(rule.DaysOfMonth) == 0 {
+			return from.AddDate(0, 1, 0)
+		}
+		sort.Ints(rule.DaysOfMonth)
+		for _, d := range rule.DaysOfMonth {
+			if d > from.Day() {
+				trialDate := time.Date(from.Year(), from.Month(), d, from.Hour(), from.Minute(), 0, 0, from.Location())
+				if trialDate.Month() == from.Month() {
+					return trialDate
+				}
+			}
+		}
+		return time.Date(from.Year(), from.Month()+1, rule.DaysOfMonth[0], from.Hour(), from.Minute(), 0, 0, from.Location())
 
-	updated, err := s.repo.Update(ctx, model)
-	if err != nil {
-		return nil, err
-	}
+	case "parity":
+		next := from.AddDate(0, 0, 1)
+		for i := 0; i < 366; i++ {
+			isEven := next.Day()%2 == 0
+			if rule.Parity != nil {
+				if (*rule.Parity == "even" && isEven) || (*rule.Parity == "odd" && !isEven) {
+					return next
+				}
+			}
+			next = next.AddDate(0, 0, 1)
+		}
+		return next
 
-	return updated, nil
+	case "specific_dates":
+		if len(rule.SpecificDates) == 0 {
+			return from.AddDate(0, 0, 1)
+		}
+		for _, d := range rule.SpecificDates {
+			if d.After(from) {
+				return d
+			}
+		}
+		return from 
+
+	default:
+		return from.AddDate(0, 0, 1)
+	}
 }
 
-func (s *Service) Delete(ctx context.Context, id int64) error {
-	if id <= 0 {
-		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
+func (s *Service) validateRecurrence(r *taskdomain.RecurrenceRule) error {
+	if r == nil {
+		return nil
 	}
-
-	return s.repo.Delete(ctx, id)
+	switch r.Type {
+	case "daily":
+		if r.EveryNDays != nil && *r.EveryNDays <= 0 {
+			return fmt.Errorf("every_n_days must be positive")
+		}
+	case "monthly":
+		if len(r.DaysOfMonth) == 0 {
+			return fmt.Errorf("days_of_month is required for monthly recurrence")
+		}
+		for _, day := range r.DaysOfMonth {
+			if day < 1 || day > 31 {
+				return fmt.Errorf("invalid day of month: %d", day)
+			}
+		}
+	case "parity":
+		if r.Parity == nil || (*r.Parity != "even" && *r.Parity != "odd") {
+			return fmt.Errorf("parity must be 'even' or 'odd'")
+		}
+	case "specific_dates":
+		if len(r.SpecificDates) == 0 {
+			return fmt.Errorf("specific_dates list cannot be empty")
+		}
+	}
+	return nil
 }
 
-func (s *Service) List(ctx context.Context) ([]taskdomain.Task, error) {
-	return s.repo.List(ctx)
-}
-
-func validateCreateInput(input CreateInput) (CreateInput, error) {
-	input.Title = strings.TrimSpace(input.Title)
-	input.Description = strings.TrimSpace(input.Description)
-
-	if input.Title == "" {
-		return CreateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
-	}
-
-	if input.Status == "" {
-		input.Status = taskdomain.StatusNew
-	}
-
-	if !input.Status.Valid() {
-		return CreateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
-	}
-
-	return input, nil
-}
-
-func validateUpdateInput(input UpdateInput) (UpdateInput, error) {
-	input.Title = strings.TrimSpace(input.Title)
-	input.Description = strings.TrimSpace(input.Description)
-
-	if input.Title == "" {
-		return UpdateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
-	}
-
-	if !input.Status.Valid() {
-		return UpdateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
-	}
-
-	return input, nil
-}
+func (s *Service) List(ctx context.Context) ([]taskdomain.Task, error) { return s.repo.List(ctx) }
+func (s *Service) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) { return s.repo.GetByID(ctx, id) }
+func (s *Service) Delete(ctx context.Context, id int64) error { return s.repo.Delete(ctx, id) }

@@ -1,33 +1,36 @@
 package handlers
 
-import (
-	"time"
+import "time"
 
-	taskdomain "example.com/taskservice/internal/domain/task"
-)
-
-type taskMutationDTO struct {
-	Title       string            `json:"title"`
-	Description string            `json:"description"`
-	Status      taskdomain.Status `json:"status"`
-}
-
+// taskDTO используется для отправки данных задачи клиенту (ответ API)
 type taskDTO struct {
-	ID          int64             `json:"id"`
-	Title       string            `json:"title"`
-	Description string            `json:"description"`
-	Status      taskdomain.Status `json:"status"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	ID          string         `json:"id"`
+	Title       string         `json:"title"`
+	Description string         `json:"description"`
+	Status      string         `json:"status"`
+	ScheduledAt *time.Time     `json:"scheduled_at"` // Указатель, так как дата может быть null
+	Recurrence  *recurrenceDTO `json:"recurrence,omitempty"`
 }
 
-func newTaskDTO(task *taskdomain.Task) taskDTO {
-	return taskDTO{
-		ID:          task.ID,
-		Title:       task.Title,
-		Description: task.Description,
-		Status:      task.Status,
-		CreatedAt:   task.CreatedAt,
-		UpdatedAt:   task.UpdatedAt,
-	}
+// taskMutationDTO используется для получения данных от клиента (при создании и обновлении)
+type taskMutationDTO struct {
+	Title       string         `json:"title"`
+	Description string         `json:"description"`
+	Status      string         `json:"status"`
+	ScheduledAt *time.Time     `json:"scheduled_at"` // Указатель для обработки null
+	Recurrence  *recurrenceDTO `json:"recurrence,omitempty"`
+}
+
+// recurrenceDTO описывает структуру настроек повторения в JSON
+type recurrenceDTO struct {
+	Type          string      `json:"type"`                     // "daily", "monthly", "specific_dates", "parity"
+	EveryNDays    *int        `json:"every_n_days,omitempty"`   // Указатель, так как может отсутствовать
+	DaysOfMonth   []int       `json:"days_of_month,omitempty"`  // Массив чисел (например, [1, 15])
+	SpecificDates []time.Time `json:"specific_dates,omitempty"` // Массив конкретных дат
+	Parity        *string     `json:"parity,omitempty"`         // "even" (четные) или "odd" (нечетные)
+}
+
+// newTaskDTO используется для возврата ID только что созданной задачи
+type newTaskDTO struct {
+	ID string `json:"id"`
 }
